@@ -1,0 +1,10 @@
+I am indebted to the research group of INRIA and ENS, Paris for publishing a C11 implementation of their WeakRB bounded queue. Especial thanks to Nhat Minh Le, Adrien Guatto, Albert Cohen and Antoniu Pop for granting me authorization to distribute their paper and research report. 
+
+The primary reference for the single producer, single consumer queue is the paper published at:
+http://ieeexplore.ieee.org/xpl/articleDetails.jsp?arnumber=6702591
+DOI: 10.1109/SBAC-PAD.2013.8
+
+A more detailed research report may be found at:
+https://hal.inria.fr/hal-00911893
+
+A version of both documents may be found in the same directory as this file. 
