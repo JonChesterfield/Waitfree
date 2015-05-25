@@ -21,7 +21,7 @@
 #include <thread>
 
 TEST_CASE("queues are empty when pointers match")
-{ 
+{
   const queue::ptr_size maxsize = std::numeric_limits<queue::ptr_size>::max();
   CHECK(queue::isempty<32>(0,0) == true);
   CHECK(queue::isempty<32>(12,12) == true);
@@ -55,7 +55,7 @@ TEST_CASE("queues are full when back is exactly capacity greater than front")
   CHECK(queue::isfull<32>(32,-1) == false);
   CHECK(queue::isfull<32>(32,0) == true);
   CHECK(queue::isfull<32>(32,1) == false);
-   
+
   CHECK(queue::isfull<32>(47,16) == false);
   CHECK(queue::isfull<32>(48,16) == true);
   CHECK(queue::isfull<32>(49,16) == false);
@@ -278,14 +278,30 @@ static std::size_t push_helper(queue::spsc<T,C> * queue, std::vector<T> * values
 }
 
 template <typename T, std::size_t C>
+static queuereturncode pop_verify(queue::spsc<T,C> * queue, T expected)
+{
+  T value;
+  auto ret = queue::spinpop(queue,&value);
+  if (ret == QUEUESUCCESS)
+    {
+      if (value != expected)
+	{
+	  ret = QUEUEFAILURE;
+	}
+    }
+  return ret;
+}
+
+
+template <typename T, std::size_t C>
 static std::size_t pop_helper(queue::spsc<T,C> * queue, std::vector<T> * values)
 {
   std::size_t errors = 0;
   for (std::size_t i = 0; i < C; ++i)
     {
-      double value = 0;
-      auto ret = queue::spinpop(queue,&value);
-      if ((ret!=QUEUESUCCESS) || (value != values->at(i)))
+      T value = 0;
+      auto ret = pop_verify(queue,values->at(i));
+      if (ret!=QUEUESUCCESS)
 	{
 	  errors++;
 	}
@@ -318,7 +334,7 @@ TEST_CASE("Push and pop using threads running sequentially")
       {
 	safe_thread push([&]{push_errors = push_helper(&queue,&values);});
       }
-  
+
       {
 	safe_thread pop([&]{pop_errors = pop_helper(&queue,&values);});
       }
@@ -337,7 +353,7 @@ TEST_CASE("Push and pop using threads running simultaneously, push first")
     {
       std::vector<double> pushed_values = get_representative_values(capacity, 3.14);
       std::vector<double> popped_values(pushed_values);
-  
+
       std::size_t push_errors = 0;
       std::size_t pop_errors = 0;
 
@@ -360,7 +376,7 @@ TEST_CASE("Push and pop using threads running simultaneously, pop first")
     {
       std::vector<double> pushed_values = get_representative_values(capacity, 3.14);
       std::vector<double> popped_values(pushed_values);
-  
+
       std::size_t push_errors = 0;
       std::size_t pop_errors = 0;
 
@@ -374,28 +390,83 @@ TEST_CASE("Push and pop using threads running simultaneously, pop first")
     }
 }
 
+template <typename T, std::size_t C>
+void set_starting_position(queue::spsc<T,C,queue::plain_pointer> * queue, queue::ptr_size position)
+{
+  atomic_store_explicit(&(queue->push_to.index.value),position,std::memory_order_seq_cst);
+  atomic_store_explicit(&(queue->pop_from.index.value),position,std::memory_order_seq_cst);
+}
+
+template <typename T, std::size_t C>
+void set_starting_position(queue::spsc<T,C,queue::caching_pointer> * queue, queue::ptr_size position)
+{
+  atomic_store_explicit(&(queue->push_to.index.value),position,std::memory_order_seq_cst);
+  atomic_store_explicit(&(queue->pop_from.index.value),position,std::memory_order_seq_cst);
+  queue->push_to.cache.value = position;
+  queue->pop_from.cache.value = position;
+}
+
 TEST_CASE("Queue can handle overflow of internal pointer on single thread")
 {
   const std::size_t capacity = 8;
-  const queue::ptr_size offset = 64;
-  int number_values_moved = offset * 8;
-    
+
   queue::spsc<double,capacity> queue;
 
   const queue::ptr_size maxsize = std::numeric_limits<queue::ptr_size>::max();
 
-  queue::ptr_size starting_position = maxsize - offset; 
-  atomic_store_explicit(&(queue.push_to.index.value),starting_position,std::memory_order_seq_cst);
-  atomic_store_explicit(&(queue.pop_from.index.value),starting_position,std::memory_order_seq_cst);
+  queue::ptr_size starting_position = maxsize - 2;
+  set_starting_position(&queue,starting_position);
 
-  for (int i = 0 ; i < number_values_moved; i++)
-    {
-      double value = 3.14 * i;
-      double tmp = value;
+  std::vector<double> value {3.14, 7.18, 24.3, 11.1, 43.2};
 
-      CHECK(queue::spinpush(&queue,&tmp) == QUEUESUCCESS);
-      tmp = 0;
-      CHECK(queue::spinpop(&queue,&tmp) == QUEUESUCCESS);
-      CHECK(value == tmp);
-    }
+  CHECK(capacity > value.size());
+
+  {
+    queue::ptr_size expected_position = starting_position;
+    for (auto v : value)
+      {
+	double tmp = v;
+	expected_position++;
+	CHECK(queue::spinpush(&queue,&tmp) == QUEUESUCCESS);
+	CHECK(queue.push_to.index.value == expected_position);
+      }
+  }
+
+  {
+    queue::ptr_size expected_position = starting_position;
+    for (auto v : value)
+      {
+	double tmp = v;
+	expected_position++;
+
+	CHECK(pop_verify(&queue,tmp) == QUEUESUCCESS);
+	CHECK(queue.pop_from.index.value == expected_position);
+      }
+  }
+
+}
+
+
+TEST_CASE("Queue can handle overflow of internal pointer on multiple threads")
+{
+  const std::size_t capacity = large_queue();
+  queue::spsc<double,capacity> queue;
+
+  const queue::ptr_size maxsize = std::numeric_limits<queue::ptr_size>::max();
+
+  std::vector<double> pushed_values = get_representative_values(capacity, 3.14);
+  std::vector<double> popped_values(pushed_values);
+
+  std::size_t push_errors = 0;
+  std::size_t pop_errors = 0;
+
+  set_starting_position(&queue,maxsize-capacity/2);
+
+  {
+    safe_thread pop([&]{pop_errors = pop_helper(&queue,&popped_values);});
+    safe_thread push([&]{push_errors = push_helper(&queue,&pushed_values);});
+  }
+
+  CHECK(push_errors == 0);
+  CHECK(pop_errors == 0);
 }
